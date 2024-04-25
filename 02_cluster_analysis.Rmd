@@ -1,0 +1,516 @@
+---
+title: "02_cluster_analysis"
+output: html_document
+date: "2024-03-11"
+---
+
+```{r setup, echo = FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+options(scipen=999)
+
+source("00_loads_packages.R")
+source("01_loads_data.R")
+
+```
+
+## Trajectory clustering 1 k-NN
+We cluster the units on their excess mortality trajectories using k-Nearest Neighbours, and assign them each a cluster affiliation. There are two ways to determine the optimal number of clusters; the gap statistic, and the within-cluster sum of square (WSS).
+
+The gap statistic approach compares within-cluster distribution to a reference sample of the data.
+
+WSS measures the internal variance of the clusters, and selects the number of clusters based on the point at which adding more clusters does not significantly decrease the internal variance, indicating that optimal clustering has been reached.
+
+In this instance, the gap statistic method proposes 6 clusters, and the WSS method proposes 5.
+```{r gap_wss}
+
+optimal_clusters_gap <- fviz_nbclust(exmort_weekly_nuts3_wide %>% select(!code_nuts), kmeans, method = "gap_stat")
+
+optimal_clusters_gap
+
+optimal_clusters_wss <- fviz_nbclust(exmort_weekly_nuts3_wide %>% select(!code_nuts), kmeans, method = "wss")
+
+print(optimal_clusters_wss)
+
+```
+
+
+## Trajectory clustering
+We cluster the units on their excess mortality trajectories using Affinity Propagagation clustering, and assign them each a cluster affiliation.
+
+```{r cluster, warning = FALSE}
+
+#  K-means
+k_nuts <- exmort_weekly_nuts3_wide %>% select(code_nuts)
+set.seed(12)
+k_means <- kmeans(exmort_weekly_nuts3_wide %>% select(!code_nuts), 5, iter.max = 50, nstart = 1)
+k_clust <- k_nuts %>% cbind(k_means$cluster) 
+
+
+# AP cluster
+clustered_mort <- exmort_weekly_nuts3_wide %>% select(code_nuts)
+mort_cluster <- apcluster(negDistMat(r=2), exmort_weekly_nuts3_wide %>% select(!code_nuts), q=0)
+
+
+mort_exemplars <- integer(length(mort_cluster@exemplars)) 
+
+for(i in seq_along(mort_cluster@exemplars)) {
+  mort_exemplars[i] <- mort_cluster@exemplars[[i]][1]
+}
+
+mort_cluster_ids <- integer(mort_cluster@l)
+for(i in seq_along(mort_cluster@clusters)) {
+  cl <- mort_cluster@clusters[[i]]
+  for(j in seq_along(cl)) {
+    mort_cluster_ids[cl[j]] <- i
+  }
+}
+  
+
+clustered_mort <- clustered_mort %>%
+  cbind(mort_cluster_ids) 
+
+
+```
+
+
+# Compare the two approaches
+The two methods give broadly the same result.
+
+```{r compare, warning = FALSE}
+
+cluster_compare <- clustered_mort %>% 
+  select(code_nuts, mort_cluster_ids) %>%
+  mutate(cluster_type = "ap_cluster") %>%
+  rbind(k_clust %>% 
+          rename(mort_cluster_ids = `k_means$cluster`) %>%
+          mutate(cluster_type = "k_means")) 
+
+sizes <- cluster_compare %>%
+  group_by(cluster_type, mort_cluster_ids) %>%
+  summarise(count = n()) %>%
+  arrange(cluster_type,(desc(count)))
+
+
+# Arrange by size order and give the same labels, to make them easier to read and compare
+ap_order <- (sizes %>% filter(cluster_type == "ap_cluster"))$mort_cluster_ids
+sizes$mapped <- rep(ap_order, length.out = nrow(sizes))
+
+cluster_compare <- cluster_compare %>%
+  left_join(sizes %>% select(mort_cluster_ids, cluster_type, mapped))
+
+
+# Plot
+ggplot(cluster_compare %>%
+         left_join(geodata)) +
+  geom_sf(aes(fill = as.factor(mapped), geometry = geometry)) +
+  geom_sf(data = geodata_0,
+          aes(geometry = geometry), fill = NA, colour="black") +
+  coord_sf(xlim = c(-10,32), ylim = c(36,72)) +
+  scale_fill_manual(values = c("#264653",
+                                 "#2a9d8f",
+                                 "#e9c46a",
+                                 "#f4a261",
+                                 "#e76f51")) +
+  bbc_style() +
+  theme(panel.grid.major = element_blank(),
+        legend.position = "right",
+        axis.text = element_blank(),
+        axis.text.x= element_blank()) +
+  facet_wrap(~ cluster_type) +
+  labs(title = "Compare cluster assignments")
+
+
+ggplot(sizes, aes(x = reorder(mapped, count), y = count, fill = as.factor(mapped))) +
+  geom_col() +
+    scale_fill_manual(values = c("#264653",
+                                 "#2a9d8f",
+                                 "#e9c46a",
+                                 "#f4a261",
+                                 "#e76f51")) +
+  bbc_style() +
+  facet_wrap(~cluster_type) +
+  labs(title = "Compare cluster assignments")
+
+
+compare_methods <- cluster_compare %>%
+  select(code_nuts, cluster_type, mapped) %>%
+  pivot_wider(names_from = cluster_type, values_from = mapped) %>%
+  mutate(change = ifelse(ap_cluster == k_means, FALSE, TRUE)) %>%
+  filter(change == TRUE)
+
+nrow(compare_methods)
+
+sankey_df <- cluster_compare %>%
+  select(code_nuts, cluster_type, mapped) %>%
+  pivot_wider(names_from = cluster_type, values_from = mapped) %>%
+  rename(AP = ap_cluster,
+         k_NN = k_means) %>%
+  # filter(AP != k_NN) %>%
+  make_long(k_NN, AP)
+
+
+sankey_df$node <- factor(sankey_df$node,levels = c(5,4,3,2,1))
+sankey_df$next_node <- factor(sankey_df$next_node,levels = c(5,4,3,2,1))
+
+
+sankey <- ggplot(sankey_df, aes(x = x,
+               next_x = next_x,
+               node = node,
+               next_node = next_node,
+               fill = factor(node))) +
+  geom_sankey(flow.alpha = 0.82, node.color = 1) +
+      scale_fill_manual(values = rev(c("#264653",
+                                 "#2a9d8f",
+                                 "#e9c46a",
+                                 "#f4a261",
+                                 "#e76f51")),
+                        guide = guide_legend(reverse = TRUE) ) +
+  theme_sankey(base_size = 16) +
+  bbc_style() +
+  theme(panel.grid.major.y = element_blank(),
+        axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank()) 
+
+
+print(sankey)
+
+
+
+```
+
+
+
+
+
+
+
+```{r exmort_by_cluster}
+
+ggplot(cluster_compare %>% filter(cluster_type ==  "ap_cluster") %>%
+         left_join(geodata)) +
+  geom_sf(aes(fill = as.factor(mapped), geometry = geometry)) +
+  geom_sf(data = geodata_0,
+          aes(geometry = geometry), fill = NA, colour = "black", lwd = 0.6) +
+  coord_sf(xlim = c(-10,32), ylim = c(36,72)) +
+  scale_fill_manual(values = c("#264653",
+                                 "#2a9d8f",
+                                 "#e9c46a",
+                                 "#f4a261",
+                                 "#e76f51")) +
+  bbc_style() +
+  theme(panel.grid.major = element_blank(),
+        legend.position = "right",
+        axis.text = element_blank(),
+        axis.text.x= element_blank())
+
+
+cluster_compare_weekly_baseline_mort <- weekly_raw_mort_nuts3 %>%
+  left_join(cluster_compare) %>%
+  drop_na() %>%
+  filter(year %in% c(2015, 2016, 2017, 2018, 2019)) %>%
+  group_by(cluster_type, mapped, week) %>%
+  summarise(expected_mort = (sum(raw_mort))/5)
+
+
+# excess mortality by cluster
+cluster_compare_weekly_exmort <- weekly_raw_mort_nuts3 %>%
+  left_join(cluster_compare) %>%
+  drop_na() %>%
+  filter(year %in% c(2020, 2021),
+         week < 53) %>%
+  group_by(cluster_type, mapped, year, week) %>%
+  summarise(clust_mort = sum(raw_mort)) %>% 
+  left_join(cluster_compare_weekly_baseline_mort) %>%
+  mutate(exmort = (clust_mort-expected_mort)/expected_mort,
+         absolute_ex_mort = clust_mort - expected_mort,
+         yearweek = as.numeric(paste0(year, week)),
+         date = as.Date(paste0(year, "/", week, "/", 1), format ="%Y/%U/%u")) 
+
+
+
+```
+
+
+peaks <- cluster_weekly_exmort %>%
+  group_by(mort_cluster_ids) %>%
+  summarise(peak = max(exmort))
+
+mort_peaks <- cluster_weekly_exmort %>%
+  select(mort_cluster_ids, exmort) %>%
+  left_join(peaks) %>%
+  filter(exmort == peak)
+  
+
+result <- cluster_weekly_exmort %>%
+  group_by(mort_cluster_ids) %>%
+  summarise(max_exmort = max(exmort),
+            date_occurred = date[which.max(exmort)])
+
+
+
+
+
+## Aggregating by cluster
+We group the nuts3 units by cluster, and calculate the expected and then total weekly excess mortality for each cluster.
+
+```{r cluster_trajectories, warning = FALSE}
+
+
+cluster_weekly_baseline_mort <- weekly_raw_mort_nuts3 %>%
+  left_join(clustered_mort %>% select(code_nuts, mort_cluster_ids)) %>%
+  drop_na() %>%
+  filter(year %in% c(2015, 2016, 2017, 2018, 2019)) %>%
+  group_by(mort_cluster_ids, week) %>%
+  summarise(expected_mort = (sum(raw_mort))/5)
+
+# excess mortality by cluster
+cluster_weekly_exmort <- weekly_raw_mort_nuts3 %>%
+  left_join(clustered_mort %>% select(code_nuts, mort_cluster_ids)) %>%
+  drop_na() %>%
+  filter(year %in% c(2020, 2021),
+         week < 53) %>%
+  group_by(mort_cluster_ids, year, week) %>%
+  summarise(clust_mort = sum(raw_mort)) %>% 
+  left_join(cluster_weekly_baseline_mort) %>%
+  mutate(exmort = (clust_mort-expected_mort)/expected_mort,
+         exmort_absolute = clust_mort-expected_mort,
+        yearweek = as.numeric(paste0(year, week)),
+        date = as.Date(paste0(year, "/", week, "/", 1), format ="%Y/%U/%u")) 
+
+
+ggplot(cluster_weekly_exmort, aes(x = date, y = exmort, group = as.factor(mort_cluster_ids), colour = as.factor(mort_cluster_ids))) +
+  geom_line() +
+  bbc_style() +
+  scale_colour_manual(values = c("#264653",
+                                 "#2a9d8f",
+                                 "#e9c46a",
+                                 "#f4a261",
+                                 "#e76f51")) +
+  scale_x_date(date_breaks = "4 months", date_labels=(date_format="%b %Y")) +
+  scale_y_continuous(labels = percent) +
+  theme(plot.margin = unit(c(0.5, 0.5, 0.5, 0.5),"cm"),
+        axis.text.x = element_text(size=12),
+        axis.text.y = element_text(size = 12),
+        axis.ticks.x = element_line(),
+        axis.ticks.margin=unit(0,'cm'),
+        panel.spacing = unit(2, "lines")) 
+
+ggplot(cluster_weekly_exmort, aes(x = date, y = exmort_absolute, group = as.factor(mort_cluster_ids), colour = as.factor(mort_cluster_ids))) +
+  geom_line() +
+  bbc_style() +
+  scale_colour_manual(values = c("#264653",
+                                 "#2a9d8f",
+                                 "#e9c46a",
+                                 "#f4a261",
+                                 "#e76f51")) +
+  scale_x_date(date_breaks = "1 year", date_labels=(date_format="%b/%y")) +
+  scale_y_continuous(labels = comma) +
+  theme(plot.margin = unit(c(0.5, 0.5, 0.5, 0.5),"cm"),
+        axis.text.x = element_text(size=10),
+        panel.spacing = unit(2, "lines")) 
+
+cluster_weekly_exmort_abs_rel <- cluster_weekly_exmort %>%
+  select(mort_cluster_ids, date, exmort, exmort_absolute) %>%
+  pivot_longer(c(exmort, exmort_absolute), names_to = "var", values_to = "value") %>%
+  mutate(var = ifelse(var == "exmort", "Proportion (%)", "Absolute numbers"))
+
+cluster_weekly_exmort_abs_rel$var <- factor(cluster_weekly_exmort_abs_rel$var, levels = c("Proportion (%)", "Absolute numbers"))
+
+ggplot(cluster_weekly_exmort_abs_rel, aes(x = date, y = value, group = as.factor(mort_cluster_ids), colour = as.factor(mort_cluster_ids))) +
+  geom_line() +
+  bbc_style() +
+  scale_colour_manual(values = c("#264653",
+                                 "#2a9d8f",
+                                 "#e9c46a",
+                                 "#f4a261",
+                                 "#e76f51")) +
+  scale_x_date(date_breaks = "1 year", date_labels=(date_format="%b/%y")) +
+  scale_y_continuous(labels = comma) +
+  theme(plot.margin = unit(c(0.5, 0.5, 0.5, 0.5),"cm"),
+        axis.text.x = element_text(size=10),
+        panel.spacing = unit(2, "lines")) +
+  facet_wrap(~var, scales = "free_y")
+
+
+
+``` 
+
+
+```{r summary_figures_exmort}
+
+
+pre_pando_mort_total_clust <- weekly_raw_mort_nuts3 %>%
+  left_join(clustered_mort %>% select(code_nuts, mort_cluster_ids)) %>%
+  drop_na() %>%
+  filter(year %in% c(2015, 2016, 2017, 2018, 2019)) %>%
+  group_by(mort_cluster_ids) %>%
+  summarise(expected_mort = (sum(raw_mort))/5)
+
+# excess mortality by cluster
+excess_mort_total_clust <- weekly_raw_mort_nuts3 %>%
+  left_join(clustered_mort %>% select(code_nuts, mort_cluster_ids)) %>%
+  drop_na() %>%
+  filter(year %in% c(2020, 2021),
+         week < 53) %>%
+  group_by(mort_cluster_ids) %>%
+  summarise(actual_mort = sum(raw_mort)) %>% 
+  left_join(pre_pando_mort_total_clust) %>%
+  mutate(exmort = (actual_mort-expected_mort)/expected_mort,
+         exmort_number = actual_mort - expected_mort)
+
+
+
+hsize = 2
+
+ggplot(excess_mort_total_clust %>% mutate(x = hsize), aes(x = hsize, y = exmort_number, fill = as.factor(mort_cluster_ids))) +
+  geom_col() +
+  coord_polar(theta = "y") +
+  xlim(c(0.2, hsize + 0.5)) +
+  bbc_style() +
+  theme(panel.grid.major.y = element_blank(),
+        axis.text = element_blank(),
+        axis.text.x = element_blank()) +
+  scale_fill_manual(values = c("#264653",
+                                 "#2a9d8f",
+                                 "#e9c46a",
+                                 "#f4a261",
+                                 "#e76f51")) 
+  
+
+
+ggplot(excess_mort_total_clust %>% 
+         mutate(subgroup = ifelse(mort_cluster_ids %in% c(1,2,3), 1,2),
+                label = paste("Cluster", mort_cluster_ids, exmort_number)), aes(area = exmort_number, fill = as.factor(mort_cluster_ids), subgroup = subgroup, label = label)) +
+  geom_treemap() +
+  scale_fill_manual(values = c("#264653",
+                                 "#2a9d8f",
+                                 "#e9c46a",
+                                 "#f4a261",
+                                 "#e76f51")) +
+  geom_treemap_text(colour = "white", place = "centre",
+                    size = 15)
+  
+
+
+
+cluster_pop <- clustered_mort %>%
+  left_join(population) %>%
+  drop_na() %>%
+  group_by(mort_cluster_ids) %>%
+  summarise(pop = sum(pop19)) %>%
+  left_join(excess_mort_total_clust) %>%
+  pivot_longer(c(exmort_number, pop), names_to = "var", values_to = "value") %>%
+  select(mort_cluster_ids, var, value)
+
+
+cluster_pop_totals <- cluster_pop %>%
+  group_by(var) %>%
+  summarise(total = sum(value))
+
+slope_data <- cluster_pop %>%
+  left_join(cluster_pop_totals) %>%
+  mutate(percent = (value/total)*100,
+         label = ifelse(var == "pop", paste0(round(percent, digits = 0), "%  "), paste0("  ", round(percent, digits = 0), "%")))
+
+slope_data$var <- factor(slope_data$var, levels = c("pop", "exmort_number"))
+
+ggplot(slope_data, aes(x = var, y = percent, label = label, group = mort_cluster_ids, colour = as.factor(mort_cluster_ids))) +
+  geom_line(size = 2) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0, colour = "black") +
+  bbc_style() +
+  scale_x_discrete(labels = c("Share of\npopulation", "Share of\nexcess mortality")) +
+  scale_colour_manual(values = c("#264653",
+                                 "#2a9d8f",
+                                 "#e9c46a",
+                                 "#f4a261",
+                                 "#e76f51")) +
+  geom_text(aes(label = label, 
+                hjust = ifelse(var == "pop", 1, 0)),
+            colour ="black") +
+  theme(axis.text.y = element_blank(),
+        panel.grid.major.y = element_blank())
+
+
+
+
+
+ 
+```
+
+```{r poland_italy}
+
+
+var_comp <- ggplot(exmort_weekly_nuts3 %>%
+         # mutate(code_nuts = ifelse(grepl("DE", code_nuts), str_sub(code_nuts, 1, -3), code_nuts)) %>%
+         left_join(clustered_mort) %>%
+         drop_na() %>%
+         mutate(country = substr(code_nuts, 1,2)) %>%
+         filter(country %in% c("IT", "PL")) %>%
+           mutate(country = ifelse(country == "PL", "Poland", "Italy")), 
+       aes(x = date,
+           y = exmort,
+           group = code_nuts,
+           colour = as.factor(mort_cluster_ids))) +
+  geom_line(alpha = 0.3) + 
+  scale_x_date(date_breaks = "1 year", date_labels=(date_format="%b/%y")) +
+  scale_y_continuous(labels = percent) +
+  geom_hline(yintercept = 0) +
+  scale_colour_manual(values = c("#264653",
+                                 "#2a9d8f",
+                                 "#e9c46a",
+                                 "#f4a261",
+                                 "#e76f51")) +
+  bbc_style() +
+  theme(legend.position = "top",
+        legend.text = element_text(size = 8),
+        plot.title = element_text(size = 12),
+        axis.text = element_text(size=8),
+        strip.text.x = element_text(hjust = 0.5, size = 14),
+        strip.placement = "outside") +
+  labs(title = "Weekly excess mortality by cluster") +
+  facet_wrap(~country, strip.position = "bottom")
+
+
+
+bar <- ggplot(total_excess_mort_nuts0 %>% filter(code_nuts %in% c("PL", "IT")), aes(x = reorder(code_nuts, exmort), y = exmort, fill = code_nuts)) + 
+  geom_bar(stat = "identity") + 
+  bbc_style() + 
+  ylim(-0.2, 1.7) + 
+  scale_y_continuous(labels = percent) +
+  geom_hline(yintercept = 0) +
+    scale_fill_manual(values = c("#8a5a96",
+                                 "#f4a261")) +
+  theme(legend.position = "none",
+        plot.title = element_text(size = 12),
+        axis.text.y = element_text(size = 8),
+        axis.text.x = element_blank()) +
+  labs(title = "Total excess mortality\n ")
+
+line <- ggplot(excess_mort_nuts0 %>% filter(code_nuts %in% c("PL", "IT")), aes(x = date, y = exmort, colour = code_nuts)) + 
+  geom_line() + 
+  facet_wrap(~code_nuts) + 
+  bbc_style()  + 
+  ylim(-0.2, 1.5) + 
+  scale_y_continuous(labels = percent) +
+  scale_colour_manual(values = c("#8a5a96",
+                                 "#f4a261")) +
+  geom_hline(yintercept = 0) +
+  theme(legend.position = "none",
+        strip.text.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 8),
+        plot.title = element_text(size = 12)) +
+  labs(title = "Weekly excess mortality")
+
+
+
+
+combined_plot <- plot_grid(plot_grid(bar, line, var_comp, ncol = 1, rel_heights = c(1, 1, 2)))
+
+
+ggsave("plt/combined_plot.png", plot = combined_plot, width = 10, height = 20, units = "cm")
+
+
+```
