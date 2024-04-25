@@ -18,4 +18,5 @@ pacman::p_load("R.utils",
                "cowplot",
                "factoextra",
                "ClusterR",
-               "ggsankey")
+               "ggsankey",
+               "gtExtras")
