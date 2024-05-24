@@ -111,6 +111,7 @@ cluster_compare <- cluster_compare %>%
   left_join(sizes %>% select(mort_cluster_ids, cluster_type, mapped))
 
 
+
 # Plot two maps to compare the difference between the two approaches
 compare_map <- ggplot(cluster_compare %>%
          left_join(geodata)) +
@@ -187,7 +188,7 @@ ggplot(clustered_mort %>%
          left_join(geodata)) +
   geom_sf(aes(fill = as.factor(mort_cluster_ids), geometry = geometry)) +
   geom_sf(data = geodata_0,
-          aes(geometry = geometry), fill = NA, colour = "black", lwd = 0.6) +
+          aes(geometry = geometry), fill = "NA", colour = "black", lwd = 0.6) +
   coord_sf(xlim = c(-10,32), ylim = c(36,72)) +
   scale_fill_manual(values = c("#264653",
                                  "#2a9d8f",
@@ -294,8 +295,7 @@ ggplot(cluster_weekly_exmort, aes(x = date, y = exmort, group = as.factor(mort_c
         panel.spacing = unit(2, "lines")) +
   guides(colour = guide_legend(override.aes = list(shape = 15, size = 7)),
          fill = "none") +
-  labs(colour = "Cluster ID")
-
+  labs(colour = "Cluster ID") 
 
 
 ``` 
@@ -466,7 +466,8 @@ var_comp <- ggplot(exmort_weekly_nuts3 %>%
         strip.placement = "outside") +
   labs(title = "Weekly excess mortality, NUTS3",
        colour = "Cluster ID") +
-  guides(fill = guide_legend(override.aes = list(shape = 15, size = 7))) +
+  guides(colour = guide_legend(override.aes = list(shape = 15, size = 7))) +
+  labs(colour = "Cluster ID") +
   facet_wrap(~country, strip.position = "bottom")
 
 bar <- ggplot(total_excess_mort_nuts0 %>% filter(code_nuts %in% c("PL", "IT")), aes(x = reorder(code_nuts, exmort), y = exmort, fill = code_nuts)) + 
@@ -508,11 +509,15 @@ combined_plot
 
 ```
 
+
 # Anova test
 Check for demographic correlations as per Lennart's feedback. Further correlation checks to follow.
 ```{r anova}
 
+
 vars_clust <- read_csv("data/nuts3vars.csv") %>% left_join(clustered_mort)
+
+
 
 aov(mort_cluster_ids ~ pop_dens, data = vars_clust) %>% summary()
 
@@ -528,3 +533,45 @@ ggboxplot(vars_clust, x = "mort_cluster_ids", y = "MEDAGEPOP")
 
 ```
 
+
+## Feature selection
+
+```{r feature-selection, warning=FALSE}
+
+
+boruta_test <- Boruta(mort_cluster_ids~., data = vars_clust %>% drop_na() %>% select(!code_nuts))
+
+plot(boruta_test, xlab = "Features")
+
+getSelectedAttributes(boruta_test, withTentative = F)
+
+boruta_out <- attStats(boruta_test) %>%
+  arrange(desc(meanImp))
+
+print(boruta_out)
+  
+
+
+
+```
+
+
+
+
+```{r box, warning = FALSE}
+
+vars_long <- vars_clust %>% 
+  pivot_longer(!c(code_nuts, mort_cluster_ids), names_to = "var", values_to = "value") %>%
+  drop_na()
+
+
+ggplot(vars_long, aes(x = as.factor(mort_cluster_ids), y=value, fill=mort_cluster_ids)) +
+    geom_violin() +
+    # geom_jitter(size = 0.1) +
+    theme(legend.position="none") +
+    scale_fill_viridis() +
+  facet_wrap(~var, scales = "free")
+  
+
+
+```
