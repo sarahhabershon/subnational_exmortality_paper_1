@@ -21,5 +21,8 @@ pacman::p_load("R.utils",
                "ggsankey",
                "gtExtras",
                "Boruta",
-               "ggpubr")
+               "ggpubr",
+               "haven",
+               "rnaturalearth",
+               "giscoR")
 

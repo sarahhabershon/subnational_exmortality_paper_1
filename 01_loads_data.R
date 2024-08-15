@@ -3,14 +3,24 @@
 # Offshore islands like the Azores and Svalbard.
 island_filter <- c("FRY", "ES7", "PT2", "PT3", "IS0", "NO0B")
 
+clean_eurostat_cache(cache_dir = NULL, config = FALSE)
+
+
 # Download geo data and filter out the unwanted units
-geodata <- get_eurostat_geospatial(
-  output_class = "sf",
-  resolution = "60",
-  nuts_level = 3,
-  year = 2021) %>%
+# geodata <- get_eurostat_geospatial(
+#   output_class = "sf",
+#   resolution = "60",
+#   nuts_level = 3,
+#   year = 2021) %>%
+#   rename(code_nuts = NUTS_ID) %>%
+#   filter(!str_detect(code_nuts, paste(island_filter, collapse="|")))
+  
+geodata <- st_read("data/NUTS_RG_60M_2021_4326_LEVL_3.geojson") %>%
   rename(code_nuts = NUTS_ID) %>%
   filter(!str_detect(code_nuts, paste(island_filter, collapse="|")))
+
+
+
 
 geodata <- sf::st_make_valid(geodata)
 geodata <- geodata[sf::st_is_valid(geodata), ] 
@@ -29,18 +39,55 @@ geodata_0 <- geodata_0[sf::st_is_valid(geodata_0), ]
 
 
 # European all cause mortality data from Eurostat deaths by week – special data collection (demomwk)
-weekly_raw_mort_nuts3 <- recode_nuts(read.csv("data/estat_demo_r_mwk3_t_en.csv"), geo_var = "geo", nuts_year = 2021) %>%
+# 
+# schleswig_holstein <- read_csv("data/schleswigholstein.csv") %>%
+#   drop_na() %>%
+#   pivot_longer(!c(year,week), names_to = "NUTS_NAME", values_to = "raw_mort") %>%
+#   mutate(week = as.numeric(week)) %>%
+#   left_join(read_csv("data/SH_nuts3.csv")) %>%
+#   select(!NUTS_NAME)
+# 
+# hamburg <- read_csv("data/hamburg.csv") %>%
+#   pivot_longer(!week, names_to = "year", values_to = "raw_mort") %>%
+#   mutate(year = as.numeric(year)) %>%
+#   mutate(code_nuts = "DE600")
+# 
+# 
+
+# weekly_raw_mort_nuts3 <- recode_nuts(read.csv("data/estat_demo_r_mwk3_t_en.csv"), geo_var = "geo", nuts_year = 2021) %>%
+#   filter(!str_detect(geo, paste(island_filter, collapse="|")),
+#          nchar(code_2021) == 5,
+#          !grepl( "UK", code_2021),
+#          !grepl("AL", code_2021)) %>% #incomplete data for 2021
+#   select(geo, code_2021, OBS_VALUE, TIME_PERIOD) %>%
+#   rename(code_nuts = code_2021,
+#          raw_mort = OBS_VALUE,
+#          year_week = TIME_PERIOD) %>%
+#   mutate(year_week = as.numeric(str_replace_all(year_week, "[^0-9]", "")),
+#          year = as.numeric(substr(year_week, 1, 4)),
+#          week = as.numeric(str_sub(year_week, -2, -1))) %>%
+#   select(!year_week)
+
+weekly_raw_mort_nuts3 <- read.csv("data/estat_demo_r_mwk3_t_en.csv") %>%
   filter(!str_detect(geo, paste(island_filter, collapse="|")),
-         nchar(code_2021) == 5,
-         !grepl( "UK", code_2021),
-         !grepl("AL", code_2021)) %>% #incomplete data for 2021
-  select(code_2021, OBS_VALUE, TIME_PERIOD) %>%
-  rename(code_nuts = code_2021,
+         nchar(geo) == 5,
+         geo %in% nuts_changes$code_2021,
+         !grepl( "UK", geo),
+         !grepl("AL", geo)) %>% #incomplete data for 2021
+  select(geo, OBS_VALUE, TIME_PERIOD) %>%
+  rename(code_nuts = geo,
          raw_mort = OBS_VALUE,
          year_week = TIME_PERIOD) %>%
   mutate(year_week = as.numeric(str_replace_all(year_week, "[^0-9]", "")),
          year = as.numeric(substr(year_week, 1, 4)),
-         week = as.numeric(str_sub(year_week, -2, -1))) 
+         week = as.numeric(str_sub(year_week, -2, -1)),
+         date = as.Date(paste0(year, "/", week, "/", 1), format ="%Y/%U/%u")) %>%
+  select(!year_week)
+
+
+# %>%
+#   bind_rows(schleswig_holstein) %>%
+#   bind_rows(hamburg)
 
 
 valid_2021 <- unique(nuts_changes$code_2021)
@@ -62,7 +109,6 @@ nuts3_weekly_baseline_mort <- weekly_raw_mort_nuts3 %>%
 
 # ex mortality nuts3
 exmort_weekly_nuts3 <- weekly_raw_mort_nuts3 %>%
-  # left_join(urban_rural_long) %>%
   filter(year %in% c(2020, 2021),
          week < 53,
          nchar(code_nuts) == 5) %>%
